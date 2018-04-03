@@ -1,28 +1,39 @@
 #include <iostream>
-#include <string>
 #include <fstream>
 #include <vector>
 #include <unordered_set>
 #include <set>
-#include "Formulas/Formula.h"
-#include "Formulas/VarFormula.h"
-#include "Formulas/NotFormula.h"
-#include "Formulas/AndFormula.h"
-#include "Formulas/OrFormula.h"
-#include "Formulas/FormulaHelper.h"
+#include "z3++.h"
 
-const int N = 100;
+using namespace z3;
+
+const int N = 3;
 const int twoN = 2 * N;
-const int C = 430;
-const int M = 10000;
+const int C = 1;
+const int M = 3;
 std::vector<std::set<int>> inputClauses;
 int literals[twoN];
 int vars[N];
+std::vector<z3::expr_vector*> clauseVars;
+
+int encodeLiteral(int literal) {
+    return ((literal < 0) ? -literal + N : literal) - 1;
+}
+
+expr equivalent(expr f1, expr f2) {
+    //(f1 & f2) | ((~f1 & ~f2)
+    return (f1 && f2) || (!(f1) && !(f2));
+}
+
+std::string getKey(int c, int v) {
+    return std::to_string(c) +  "," + std::to_string(v);
+}
+
+const char *getKeyCStr(int c, int v) {
+    return getKey(c, v).c_str();
+}
 
 //Used for \Phi_init
-int encodeLiteral(int literal) {
-    return (literal < 0) ? -literal + N : literal;
-}
 
 void populateLiterals() {
     for (int i = 1; i < N+1; i++) {
@@ -32,174 +43,160 @@ void populateLiterals() {
     }
 }
 
-Formula* phi_init() {
-    auto* retVal = new AndFormula(nullptr, nullptr);
+expr phi_init(context & c) {
+    auto retVal = c.bool_val(true);
     for (int i = 0; i < C; i++) {
         std::set<int> & tempSet = inputClauses[i];
         for (int v : literals) {
-            Formula* curr = new VarFormula(i, v);
+            auto curr = (*clauseVars[i])[encodeLiteral(v)];
             if (tempSet.find(v) == tempSet.end()) {
                 //v does not exist in clause
-                curr = new NotFormula(curr);
+                curr = !curr;
             }
-            if (!retVal->left_) {
-                retVal->left_ = curr;
-            } else if (!retVal->right_) {
-                retVal->right_ = curr;
-            } else {
-                AndFormula* temp = retVal;
-                retVal = new AndFormula(temp, curr);
-            }
+            retVal = retVal && curr;
         }
     }
     return retVal;
 }
 
-Formula* phi_consistent_p1() {
+expr phi_consistent_p1(context & c) {
     //Cth index is C+1th clause
-    auto* f1 = new AndFormula(nullptr, nullptr);
+    expr f1 = c.bool_val(true);
     for (int i = C; i < M; i++) {
-        auto* f2 = new OrFormula(nullptr, nullptr);
-        for (int j = 1; j < i; j++) {
-            for (int jp = 1; jp < i; jp++) {
+        expr f2 = c.bool_val(false);
+        for (int j = 0; j < i; j++) {
+            for (int jp = 0; jp < i; jp++) {
                 if (j != jp) {
                     //Equivalence part of formula
-                    auto* f3l = new AndFormula(nullptr, nullptr);
+                    expr f3l = c.bool_val(true);
                     for (int l : literals) {
-                        auto *orForm = new OrFormula(new VarFormula(j, l), new VarFormula(jp, l));
-                        auto *andForm = new AndFormula(new NotFormula(new VarFormula(j, -l)),
-                                                       new NotFormula(new VarFormula(jp, -l)));
-                        auto *combForm = new AndFormula(orForm, andForm);
-                        auto *equivForm = equivalent(new VarFormula(i, l), combForm);
-                        if (!f3l->left_) {
-                            f3l->left_ = equivForm;
-                        } else if (!f3l->right_) {
-                            f3l->right_ = equivForm;
-                        } else {
-                            AndFormula *tempAnd = f3l;
-                            f3l = new AndFormula(tempAnd, equivForm);
-                        }
+                        expr orForm = (*clauseVars[j])[encodeLiteral(l)] || (*clauseVars[jp])[encodeLiteral(l)];
+                        expr andForm = !((*clauseVars[j])[encodeLiteral(-l)]) && !((*clauseVars[jp])[encodeLiteral(l)]);
+                        expr combForm = orForm && andForm;
+                        expr equivForm = equivalent((*clauseVars[i])[encodeLiteral(l)], combForm);
+                        f3l = f3l && equivForm;
                     }
                     //literal and -literal in the two
-                    auto* f3v = new OrFormula(nullptr, nullptr);
+                    expr f3v = c.bool_val(false);
                     for (int v : vars) {
-                        auto* temp = new AndFormula(new VarFormula(j, v), new VarFormula(jp, -v));
-                        if (!f3v->left_) {
-                            f3v->left_ = temp;
-                        } else if (!f3v->right_) {
-                            f3v->right_ = temp;
-                        } else {
-                            OrFormula* tempOr = f3v;
-                            f3v = new OrFormula(tempOr, temp);
-                        }
+                        expr temp = ((*clauseVars[j])[encodeLiteral(v)]) && ((*clauseVars[jp])[encodeLiteral(-v)]);
+                        f3v = f3v || temp;
                     }
                     //Combine the two
-                    auto* f3 = new AndFormula(f3l, f3v);
-                    if (!f2->left_) {
-                        f2->left_ = f3;
-                    } else if (!f2->right_) {
-                        f2->right_ = f3;
-                    } else {
-                        OrFormula *tempOr = f2;
-                        f2 = new OrFormula(tempOr, f3);
-                    }
+                    expr f3 = f3l && f3v;
+                    f2 = f2 || f3;
                 }
             }
         }
         //And f1 with f1 and f2
-        if (!f1->left_) {
-            f1->left_ = f2;
-        } else if (!f1->right_) {
-            f1->right_ = f2;
-        } else {
-            AndFormula *tempAnd = f1;
-            f1 = new AndFormula(tempAnd, f2);
-        }
+        f1 = f1 && f2;
     }
     return f1;
 }
 
-Formula* phi_consistent_p2() {
-    auto* f1 = new AndFormula(nullptr, nullptr);
+expr phi_consistent_p2(context & c) {
+    expr f1 = c.bool_val(true);
     for (int i = 0; i < M; i++) {
-        auto* f2 = new AndFormula(nullptr, nullptr);
+        expr f2 = c.bool_val(true);
         for (int l : literals) {
-            auto* tempNot = new NotFormula(new AndFormula(new VarFormula(i, l), new VarFormula(i, -l)));
-            if (!f2->left_) {
-                f2->left_ = tempNot;
-            } else if (!f2->right_) {
-                f2->right_ = tempNot;
-            } else {
-                AndFormula *tempAnd = f2;
-                f2 = new AndFormula(tempAnd, tempNot);
-            }
+            expr tempNot = !(((*clauseVars[i])[encodeLiteral(l)]) && ((*clauseVars[i])[encodeLiteral(-l)]));
+            f2 = f2 && tempNot;
         }
         //And f1 with f1 and f2
-        if (!f1->left_) {
-            f1->left_ = f2;
-        } else if (!f1->right_) {
-            f1->right_ = f2;
-        } else {
-            AndFormula *tempAnd = f1;
-            f1 = new AndFormula(tempAnd, f2);
-        }
+        f1 = f1 && f2;
     }
     return f1;
 }
 
-Formula* phi_consistent() {
-    return new AndFormula(phi_consistent_p1(), phi_consistent_p2());
+expr phi_consistent(context & c) {
+    return phi_consistent_p1(c) && phi_consistent_p2(c);
 }
 
-Formula* phi_empty() {
+expr phi_empty(context & c) {
     //ith index is i+1th clause
-    auto* retVal = new OrFormula(nullptr, nullptr);
+    auto retVal = c.bool_val(false);
     for (int i = 0; i < M; ++i) {
-        auto* currAnd = new AndFormula(nullptr, nullptr);
+        auto currAnd = c.bool_val(true);
         for (int l : literals) {
-            auto* temp = new NotFormula(new VarFormula(i, l));
-            if (!currAnd->left_) {
-                currAnd->left_ = temp;
-            } else if (!currAnd->right_) {
-                currAnd->right_ = temp;
-            } else {
-                AndFormula* tempAnd = currAnd;
-                currAnd = new AndFormula(tempAnd, temp);
-            }
+            auto temp = !((*clauseVars[i])[encodeLiteral(l)]);
+            currAnd = currAnd && temp;
         }
-        if (!retVal->left_) {
-            retVal->left_ = currAnd;
-        } else if (!retVal->right_) {
-            retVal->right_ = currAnd;
-        } else {
-            OrFormula* tempOr = retVal;
-            retVal = new OrFormula(tempOr, currAnd);
-        }
+        retVal = retVal || currAnd;
     }
     return retVal;
 }
 
 int main() {
-    std::ifstream infile("sat100.cnf");
+    std::ifstream infile("isat10.cnf");
     int a, b, c, d;
     while (infile >> a >> b >> c >> d) {
-        std::set temp({a, b, c});
+        std::set<int> temp({a, b, c});
         inputClauses.push_back(temp);
     }
-    populateLiterals();
-    Formula* p_init = phi_init();
-    Formula* p_cons = phi_consistent();
-    Formula* p_empty = phi_empty();
+    //Formula* p_cons = phi_consistent();
+    //Formula* p_empty = phi_empty();
 
-    std::ofstream myfile;
-    myfile.open("out.cnf");
+//    Formula* phi_temp = new AndFormula(p_init, p_cons);
+
+//    std::cout << "Reached 1" << std::endl;
+//    Formula* phi = new AndFormula(phi_temp, p_empty);
+//    std::cout << "Reached 2" << std::endl;
+
+    context con;
+    populateLiterals();
+    for (int i = 0; i < M; i++) {
+        auto *clause_i= new expr_vector(con);
+        for (int l : literals) {
+            std::string name = getKey(i, l);
+            auto in = con.bool_const(name.c_str());
+            std::cout << in << std::endl;
+            clause_i->push_back(in);
+        }
+        clauseVars.push_back(clause_i);
+    }
+    expr p_init = phi_init(con);
+    expr p_cons = phi_consistent(con);
+    expr p_empty = phi_empty(con);
+    expr phi = p_init && p_cons && p_empty;
+
+//    expr phi_expr = p_init;// && phi_cons_expr && phi_empty_expr;
+    solver s(con);
+    std::cout << phi << std::endl;
+    std::cout << s << "\n";
+    std::cout << s.to_smt2() << "\n";
+    switch (s.check()) {
+        case unsat:   std::cout << "UNSAT\n"; break;
+        case sat:     std::cout << "SAT\n"; break;
+        case unknown: std::cout << "unknown\n"; break;
+    }
+//    model m = s.get_model();
+//    for (int i = 0; i < M; i++) {
+//        for (int l : literals) {
+//            expr z3_expr = clauseVars[i][encodeLiteral(l)];
+//            if (z3_expr.bool_value() == Z3_L_TRUE) {
+//                std::cout << l;
+//            }
+//        }
+//        std::cout << "\n\n";
+//    }
+
+    //std::ofstream myfile;
+    //myfile.open("out.cnf");
     //myfile << p_init;
     //myfile << p_cons;
     //myfile << p_empty;
-    myfile.close();
+    //myfile.close();
     infile.close();
-    delete p_init;
-    delete p_cons;
-    delete p_empty;
+//    std::cout << "Reached 3" << std::endl;
+//    delete p_init;
+//    std::cout << "Reached 4" << std::endl;
+//    delete p_cons;
+//    std::cout << "Reached 5" << std::endl;
+//    delete p_empty;
+    for (auto i : clauseVars) {
+        delete i;
+    }
+    std::cout << "Reached 6" << std::endl;
+//    delete phi;
     return 0;
 }
