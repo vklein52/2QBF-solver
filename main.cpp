@@ -7,10 +7,10 @@
 
 using namespace z3;
 
-const int N = 3;
+const int N = 2;
 const int twoN = 2 * N;
-const int C = 1;
-const int M = 3;
+const int C = 4;
+const int M = 7;
 std::vector<std::set<int>> inputClauses;
 int literals[twoN];
 int vars[N];
@@ -24,6 +24,10 @@ expr equivalent(expr f1, expr f2) {
     //(f1 & f2) | ((~f1 & ~f2)
     return (f1 && f2) || (!(f1) && !(f2));
 }
+//
+//expr implies(expr f1, expr f2) {
+//    return (!f1 || f2);
+//}
 
 std::string getKey(int c, int v) {
     return std::to_string(c) +  "," + std::to_string(v);
@@ -59,29 +63,82 @@ expr phi_init(context & c) {
     return retVal;
 }
 
+//expr phi_consistent_p1(context & c) {
+//    //Cth index is C+1th clause
+//    expr f1 = c.bool_val(true);
+//    for (int i = C; i < M; i++) {
+//        expr f2 = c.bool_val(false);
+//        for (int j = 0; j < i; j++) {
+//            for (int jp = 0; jp < i; jp++) {
+//                if (j != jp) {
+//                    //Equivalence part of formula
+//                    expr f3l = c.bool_val(true);
+//                    for (int l : literals) {
+//                        expr orForm = (*clauseVars[j])[encodeLiteral(l)] || (*clauseVars[jp])[encodeLiteral(l)];
+//                        expr andForm = !((*clauseVars[j])[encodeLiteral(-l)]) && !((*clauseVars[jp])[encodeLiteral(l)]);
+//                        expr combForm = orForm && andForm;
+//                        expr equivForm = equivalent((*clauseVars[i])[encodeLiteral(l)], combForm);
+//                        f3l = f3l && equivForm;
+//                    }
+//                    //literal and -literal in the two
+//                    expr f3v = c.bool_val(false);
+//                    for (int v : vars) {
+//                        expr temp = ((*clauseVars[j])[encodeLiteral(v)]) && ((*clauseVars[jp])[encodeLiteral(-v)]);
+//                        f3v = f3v || temp;
+//                    }
+//                    //Combine the two
+//                    expr f3 = f3l && f3v;
+//                    f2 = f2 || f3;
+//                }
+//            }
+//        }
+//        //And f1 with f1 and f2
+//        f1 = f1 && f2;
+//    }
+//    return f1;
+//}
+
 expr phi_consistent_p1(context & c) {
     //Cth index is C+1th clause
     expr f1 = c.bool_val(true);
     for (int i = C; i < M; i++) {
         expr f2 = c.bool_val(false);
         for (int j = 0; j < i; j++) {
-            for (int jp = 0; jp < i; jp++) {
+            for (int jp = 0; jp < j; jp++) {
                 if (j != jp) {
                     //Equivalence part of formula
                     expr f3l = c.bool_val(true);
+                    expr f3v = c.bool_val(false);
                     for (int l : literals) {
+                        //f3l part
                         expr orForm = (*clauseVars[j])[encodeLiteral(l)] || (*clauseVars[jp])[encodeLiteral(l)];
-                        expr andForm = !((*clauseVars[j])[encodeLiteral(-l)]) && !((*clauseVars[jp])[encodeLiteral(l)]);
+                        expr andForm = !((*clauseVars[j])[encodeLiteral(-l)]) && !((*clauseVars[jp])[encodeLiteral(-l)]);
                         expr combForm = orForm && andForm;
                         expr equivForm = equivalent((*clauseVars[i])[encodeLiteral(l)], combForm);
                         f3l = f3l && equivForm;
+                        //f3v part
+                        expr atLeast1 = (
+                                            ((*clauseVars[j])[encodeLiteral(l)])
+                                            &&
+                                            ((*clauseVars[jp])[encodeLiteral(-l)])
+                                        )
+                                        ||
+                                        (
+                                                ((*clauseVars[j])[encodeLiteral(-l)]) && ((*clauseVars[jp])[encodeLiteral(l)])
+                                        );
+                        expr exactly1 = c.bool_val(true);
+                        for (int lp : literals) {
+                            if (l != lp) {
+                                expr tempAnd =
+                                        !((*clauseVars[j])[encodeLiteral(-lp)]) && !((*clauseVars[jp])[encodeLiteral(-lp)]);
+                                expr temp = implies((*clauseVars[i])[encodeLiteral(lp)], tempAnd);
+                                exactly1 = exactly1 && temp;
+                            }
+                        }
+                        expr res = atLeast1 && exactly1;
+                        f3v = f3v || res;
                     }
-                    //literal and -literal in the two
-                    expr f3v = c.bool_val(false);
-                    for (int v : vars) {
-                        expr temp = ((*clauseVars[j])[encodeLiteral(v)]) && ((*clauseVars[jp])[encodeLiteral(-v)]);
-                        f3v = f3v || temp;
-                    }
+
                     //Combine the two
                     expr f3 = f3l && f3v;
                     f2 = f2 || f3;
@@ -109,7 +166,9 @@ expr phi_consistent_p2(context & c) {
 }
 
 expr phi_consistent(context & c) {
-    return phi_consistent_p1(c) && phi_consistent_p2(c);
+    expr p1 = phi_consistent_p1(c);
+    std::cout << "p1:\n\n" << p1 << std::endl;
+    return p1 && phi_consistent_p2(c);
 }
 
 expr phi_empty(context & c) {
@@ -126,22 +185,26 @@ expr phi_empty(context & c) {
     return retVal;
 }
 
+expr clause5(context& c) {
+    return ((*clauseVars[4])[encodeLiteral(-1)]) && !(((*clauseVars[4])[encodeLiteral(1)])) && !(((*clauseVars[4])[encodeLiteral(-2)])) && !(((*clauseVars[4])[encodeLiteral(2)]));
+}
+
+expr clause6(context& c) {
+    return ((*clauseVars[5])[encodeLiteral(1)]) && !(((*clauseVars[5])[encodeLiteral(-1)])) && !(((*clauseVars[5])[encodeLiteral(-2)])) && !(((*clauseVars[5])[encodeLiteral(2)]));
+}
+
 int main() {
     std::ifstream infile("isat10.cnf");
-    int a, b, c, d;
-    while (infile >> a >> b >> c >> d) {
-        std::set<int> temp({a, b, c});
+//    int a, b, c, d;
+//    while (infile >> a >> b >> c >> d) {
+//        std::set<int> temp({a, b, c});
+//        inputClauses.push_back(temp);
+//    }
+    int a, b, d;
+    while (infile >> a >> b >> d) {
+        std::set<int> temp({-a, -b});
         inputClauses.push_back(temp);
     }
-    //Formula* p_cons = phi_consistent();
-    //Formula* p_empty = phi_empty();
-
-//    Formula* phi_temp = new AndFormula(p_init, p_cons);
-
-//    std::cout << "Reached 1" << std::endl;
-//    Formula* phi = new AndFormula(phi_temp, p_empty);
-//    std::cout << "Reached 2" << std::endl;
-
     context con;
     populateLiterals();
     for (int i = 0; i < M; i++) {
@@ -149,11 +212,11 @@ int main() {
         for (int l : literals) {
             std::string name = getKey(i, l);
             auto in = con.bool_const(name.c_str());
-            std::cout << in << std::endl;
             clause_i->push_back(in);
         }
         clauseVars.push_back(clause_i);
     }
+    //Populated all clause variables
     expr p_init = phi_init(con);
     expr p_cons = phi_consistent(con);
     expr p_empty = phi_empty(con);
@@ -161,42 +224,37 @@ int main() {
 
 //    expr phi_expr = p_init;// && phi_cons_expr && phi_empty_expr;
     solver s(con);
-    std::cout << phi << std::endl;
-    std::cout << s << "\n";
-    std::cout << s.to_smt2() << "\n";
+    s.add(phi);
+//    std::cout << phi << std::endl;
+//    std::cout << s << "\n";
+//    std::cout << s.to_smt2() << "\n";
+    std::cout << "Will check satisfiability\n\n";
     switch (s.check()) {
         case unsat:   std::cout << "UNSAT\n"; break;
         case sat:     std::cout << "SAT\n"; break;
         case unknown: std::cout << "unknown\n"; break;
     }
-//    model m = s.get_model();
-//    for (int i = 0; i < M; i++) {
-//        for (int l : literals) {
-//            expr z3_expr = clauseVars[i][encodeLiteral(l)];
-//            if (z3_expr.bool_value() == Z3_L_TRUE) {
-//                std::cout << l;
-//            }
-//        }
-//        std::cout << "\n\n";
+//    std::cout << "Resolution expressions:\n\n";
+    model m(con, s.get_model());
+    for (int i = 0; i < M; i++) {
+        for (int l : literals) {
+            expr z3_expr = (*clauseVars[i])[encodeLiteral(l)];
+            if (m.eval(z3_expr, false).bool_value() == Z3_L_TRUE) {
+                std::cout << l <<", ";
+            }
+        }
+        std::cout << "\n\n";
+    }
+//    int n = m.num_consts();
+//    std::cout << n << std::endl;
+//    for (unsigned i = 0; i < n; i++) {
+//        expr r = m.get_const_interp(m.get_const_decl(i));
+//        std::cout << m.get_const_decl(i) << ", " << r << std::endl;
 //    }
-
-    //std::ofstream myfile;
-    //myfile.open("out.cnf");
-    //myfile << p_init;
-    //myfile << p_cons;
-    //myfile << p_empty;
-    //myfile.close();
     infile.close();
-//    std::cout << "Reached 3" << std::endl;
-//    delete p_init;
-//    std::cout << "Reached 4" << std::endl;
-//    delete p_cons;
-//    std::cout << "Reached 5" << std::endl;
-//    delete p_empty;
     for (auto i : clauseVars) {
         delete i;
     }
-    std::cout << "Reached 6" << std::endl;
 //    delete phi;
     return 0;
 }
