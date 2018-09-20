@@ -7,13 +7,23 @@
 
 using namespace z3;
 
+// Num variables
 const int N = 3;
 const int twoN = 2 * N;
+// Num clauses - likely want to extract initialization to the file parsing portion of code
 const int C = 8;
+// Max clauses generated - needs to be tweaked per file ran on - expression to generate upper bound perhaps?
 const int M = 15;
+
+// inputClauses allows us to define all variables that will be used and reduce memory consumption
 std::vector<std::set<int>> inputClauses;
+
+std::set<int> xVars, yVars;
+
 int literals[twoN];
+
 int vars[N];
+
 std::vector<z3::expr_vector*> clauseVars;
 
 int encodeLiteral(int literal) {
@@ -32,10 +42,6 @@ std::string getKey(int c, int v) {
     return std::to_string(c) +  "," + std::to_string(v);
 }
 
-const char *getKeyCStr(int c, int v) {
-    return getKey(c, v).c_str();
-}
-
 //Used for \Phi_init
 
 void populateLiterals() {
@@ -51,7 +57,8 @@ expr phi_init(context & c) {
     for (int i = 0; i < C; i++) {
         std::set<int> & tempSet = inputClauses[i];
         for (int v : literals) {
-            auto curr = (*clauseVars[i])[encodeLiteral(v)];
+            auto curr = getClauseVar(i, v);
+
             if (tempSet.find(v) == tempSet.end()) {
                 //v does not exist in clause
                 curr = !curr;
@@ -66,6 +73,7 @@ expr phi_consistent_p1(context & c) {
     //Cth index is C+1th clause
     expr f1 = c.bool_val(true);
     for (int i = C; i < M; i++) {
+        std::cout << "Generated clause: " << i << " out of " << M << std::endl;
         expr f2 = c.bool_val(false);
         for (int j = 0; j < i; j++) {
             for (int jp = 0; jp < j; jp++) {
@@ -78,10 +86,6 @@ expr phi_consistent_p1(context & c) {
                     for (int l : literals) {
                         if (l != v && l != -v) {
                             expr left = getClauseVar(i, l);
-//                            expr right = (getClauseVar(j, l) && !getClauseVar(jp, -l))
-//                                         ||
-//                                         (getClauseVar(jp, l) && !getClauseVar(j, -l));
-
                             expr right = (getClauseVar(j, l) || getClauseVar(jp, l));
                             f3p2 = f3p2 && equivalent(left, right);
                         }
@@ -90,6 +94,39 @@ expr phi_consistent_p1(context & c) {
                 }
                 f2 = f2 || f3;
             }
+        }
+        //And f1 with f1 and f2
+        f1 = f1 && f2;
+    }
+    return f1;
+}
+
+expr linear_phi_consistent_p1(context &c) {
+    //Cth index is C+1th clause
+    expr f1 = c.bool_val(true);
+    for (int i = C; i < M; i++) {
+        std::cout << "Generated clause: " << i << " out of " << M << std::endl;
+        expr f2 = c.bool_val(false);
+        for (int j = 0; j < i - 1; j++) {
+            int jp = i - 1;
+            expr f3 = c.bool_val(false);
+            for (int v : vars) {
+                expr f3p1 = (getClauseVar(j, v) && getClauseVar(jp, -v))
+                            ||
+                            (getClauseVar(j, -v) && getClauseVar(jp, v));
+                expr f3p2 = c.bool_val(true);
+                for (int l : literals) {
+                    if (l != v && l != -v) {
+                        expr left = getClauseVar(i, l);
+
+                        expr right = (getClauseVar(j, l) || getClauseVar(jp, l));
+                        f3p2 = f3p2 && equivalent(left, right);
+                    }
+                }
+                f3 = f3 || (f3p1 && f3p2);
+            }
+            f2 = f2 || f3;
+
         }
         //And f1 with f1 and f2
         f1 = f1 && f2;
@@ -115,12 +152,17 @@ expr phi_consistent(context & c) {
     return phi_consistent_p1(c) && phi_consistent_p2(c);
 }
 
+// Could use this instead of phi_consistent - needs larger 'M' and can be slower at times
+expr linear_phi_consistent(context &c) {
+    return linear_phi_consistent_p1(c) && phi_consistent_p2(c);
+}
+
 expr phi_empty(context & c) {
     //ith index is i+1th clause
     auto retVal = c.bool_val(false);
     for (int i = 0; i < M; ++i) {
         auto currAnd = c.bool_val(true);
-        for (int l : literals) {
+        for (int l : xVars) {
             auto temp = !((*clauseVars[i])[encodeLiteral(l)]);
             currAnd = currAnd && temp;
         }
@@ -129,14 +171,17 @@ expr phi_empty(context & c) {
     return retVal;
 }
 
-bool bruteMatchesPBR(const std::string &filename) {
+void bruteMatchesPBR(const std::string &filename) {
     std::ifstream infile(filename);
-//    int a, b, c, d;
-//    while (infile >> a >> b >> c >> d) {
-//        std::set<int> temp({a, b, c});
-//        inputClauses.push_back(temp);
-//    }
     int a, b, c, d;
+    while (infile >> a && a != 0) {
+        yVars.insert(a);
+        yVars.insert(-a);
+    }
+    while (infile >> a && a != 0) {
+        xVars.insert(a);
+        xVars.insert(-a);
+    }
     while (infile >> a >> b >> c >> d) {
         std::set<int> temp({-a, -b, -c});
         inputClauses.push_back(temp);
@@ -154,34 +199,41 @@ bool bruteMatchesPBR(const std::string &filename) {
     }
     //Populated all clause variables
     expr p_init = phi_init(con);
+    std::cout << "Generated PHI_INIT" << std::endl;
     expr p_cons = phi_consistent(con);
+    // Uncomment following line and comment above to use linear phi_consistent
+//    expr lin_p_cons = linear_phi_consistent(con);
+    std::cout << "Generated PHI_CONSISTENT" << std::endl;
     expr p_empty = phi_empty(con);
+    std::cout << "Generated PHI_EMPTY" << std::endl;
     expr phi = p_init && p_cons && p_empty;
 
     solver s(con);
     s.add(phi);
+    std::cout << "Starting solver" << std::endl;
     check_result PBR = s.check();
-    model m(con, s.get_model());
-    for (int i = 0; i < M; i++) {
-        for (int l : literals) {
-            expr z3_expr = (*clauseVars[i])[encodeLiteral(l)];
-            if (m.eval(z3_expr, false).bool_value() == Z3_L_TRUE) {
-                std::cout << l << ", ";
-            }
-        }
-        std::cout << "\n\n";
-    }
+    // Uncomment following lines to see debug info - (clauses created) - will cause z3 exception if unsat for any reason
+    // i.e. simply unsat, too small M, etc.
+//    model m(con, s.get_model());
+//    for (int i = 0; i < M; i++) {
+//        for (int l : literals) {
+//            expr z3_expr = (*clauseVars[i])[encodeLiteral(l)];
+//            if (m.eval(z3_expr, false).bool_value() == Z3_L_TRUE) {
+//                std::cout << l << ", ";
+//            }
+//        }
+//        std::cout << "\n\n";
+//    }
     infile.close();
     for (auto i : clauseVars) {
         delete i;
     }
-    //Now will do brute force method
+//    //Now will do brute force method
     std::ifstream brutefile(filename);
-//    int a, b, c, d;
-//    while (infile >> a >> b >> c >> d) {
-//        std::set<int> temp({a, b, c});
-//        inputClauses.push_back(temp);
-//    }
+    while (infile >> a >> b >> c >> d) {
+        std::set<int> temp({a, b, c});
+        inputClauses.push_back(temp);
+    }
     context bruteCon;
     expr brute = bruteCon.bool_val(true);
     int bClauseNum = 0;
@@ -196,12 +248,14 @@ bool bruteMatchesPBR(const std::string &filename) {
     bruteS.add(brute);
     check_result bruteRes = bruteS.check();
     brutefile.close();
-    std::cout << brute << std::endl;
+
+    std::cout << "PBR RESULT: ";
     switch (PBR) {
         case unsat:   std::cout << "UNSAT\n"; break;
         case sat:     std::cout << "SAT\n"; break;
         case unknown: std::cout << "unknown\n"; break;
     }
+    std::cout << "BRUTE RESULT: ";
     switch (bruteRes) {
         case unsat:   std::cout << "UNSAT\n"; break;
         case sat:     std::cout << "SAT\n"; break;
@@ -210,9 +264,7 @@ bool bruteMatchesPBR(const std::string &filename) {
 }
 
 int main() {
-    //TODO: create func that reads DNF input, negates, checks sat, and should say unsat when we say sat
     // 2QBFProofSearch
     bruteMatchesPBR("sat10.cnf");
-//    delete phi;
     return 0;
 }
